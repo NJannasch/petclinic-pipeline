@@ -1,0 +1,11 @@
+FROM maven:3.9.3-ibm-semeru-17-focal as build
+WORKDIR /app
+COPY spring-petclinic-main /app
+# COPY settings.xml /app
+RUN mvn clean package
+
+FROM ibm-semeru-runtimes:open-17.0.7_7-jre-focal
+ARG JAR_FILE=target/*.jar
+WORKDIR /app
+COPY --from=build /app/${JAR_FILE} app.jar
+ENTRYPOINT ["java","-Djava.security.egd=file:/dev/./urandom","-jar","/app/app.jar"]

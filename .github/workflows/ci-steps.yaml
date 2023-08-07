@@ -1,0 +1,183 @@
+name: ExamplePipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      JFROG_MVN_REMOTE:
+        description: 'AWS Region of ECR'
+        required: true
+        default: 'mvn-remote'
+      JFROG_IMAGE_REPOSITORY:
+        description: 'JFrog Container Image Repository'
+        required: true
+        default: 'demo'
+      IMAGE_PREFIX:
+        description: 'Container Image Prefix'
+        required: true
+        default: 'petclinic'
+      FEATURE_JFROG:
+        type: boolean
+        description: Use JFrog as Mirror and Container Registry instead of Maven Central and GHCR
+        default: false
+
+jobs:
+  BuildTestCheckPush:
+
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+    - name: Set up JDK 17  # Prepare Java Build Environment as its not encapsulated in a container
+      uses: actions/setup-java@v2
+      with:
+        java-version: '17'
+        distribution: 'adopt'
+
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - uses: actions/checkout@v3  # Remote checkout repo for easier adjustments, its untouched
+      with:
+        repository: spring-projects/spring-petclinic
+        ref: 0a529015bc7933bcd724a5ae92605f0e9ee0e3f7
+        path: spring-petclinic
+
+    - name: Setup JFrog Artifactory setting.xml
+      if: ${{ inputs.FEATURE_JFROG }}
+      run: |
+        cat <<EOF > settings.xml
+        <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0
+                              https://maven.apache.org/xsd/settings-1.0.0.xsd">
+          <servers>
+            <server>
+              <username>${{ secrets.ARTIFACTORY_USERNAME }}</username>
+              <password>${{ secrets.ARTIFACTORY_PASSWORD }}</password>
+              <id>central</id>
+            </server>
+          </servers>
+          <mirrors>
+            <mirror>
+              <id>central</id>
+              <name>Mirror</name>
+              <url>https://${{ secrets.ARTIFACTORY_URL }}/artifactory/${{ github.event.inputs.JFROG_MVN_REMOTE }}</url>
+              <mirrorOf>*</mirrorOf>
+            </mirror>
+          </mirrors>
+        </settings>
+        EOF
+
+    - name: Setup Maven Central setting.xml
+      if: ${{ !inputs.FEATURE_JFROG }}
+      run: |
+        cat <<EOF > settings.xml
+        <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0
+                              https://maven.apache.org/xsd/settings-1.0.0.xsd">
+          <mirrors>
+            <mirror>
+              <id>central</id>
+              <name>MavenCentral</name>
+              <url>https://repo1.maven.org/maven2</url>
+              <mirrorOf>*</mirrorOf>
+            </mirror>
+          </mirrors>
+        </settings>
+        EOF
+
+# Generic Build - start
+    - name: Compile the code
+      working-directory: ${{ github.workspace }}/spring-petclinic
+      run: mvn compile -s ${{ github.workspace }}/settings.xml
+
+    - name: Run tests
+      working-directory: ${{ github.workspace }}/spring-petclinic
+      run: mvn test -s ${{ github.workspace }}/settings.xml
+
+    - name: Package
+      working-directory: ${{ github.workspace }}/spring-petclinic
+      run: mvn package -s ${{ github.workspace }}/settings.xml
+# Generic Build - end
+
+    - name: Login to JFrog Artifactory Container Registry
+      if: ${{ inputs.FEATURE_JFROG }}
+      uses: docker/login-action@v1
+      with:
+        registry: ${{ secrets.ARTIFACTORY_URL }}
+        username: ${{ secrets.ARTIFACTORY_USERNAME }}
+        password: ${{ secrets.ARTIFACTORY_PASSWORD }}
+
+    - name: Login to GitHub Container Registry
+      if: ${{ !inputs.FEATURE_JFROG }}
+      uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Docker build
+      run: |
+        docker build -t ${{ github.event.inputs.IMAGE_PREFIX }}-${{ github.repository_id }}:${{ github.sha }} .
+
+    - name: Setup JFrog CLI  # Alternative solution download without action https://jfrog.com/de/getcli/
+      uses: jfrog/setup-jfrog-cli@v3
+      env:
+        JF_URL: https://${{ secrets.ARTIFACTORY_URL }}
+        JF_USER: ${{ secrets.ARTIFACTORY_USERNAME }}
+        JF_PASSWORD: ${{ secrets.ARTIFACTORY_PASSWORD }}
+
+    - name: Scan Container with JFrog XRay
+      run: |
+        jf docker scan ${{ github.event.inputs.IMAGE_PREFIX }}-${{ github.repository_id }}:${{ github.sha }} --format table --extended-table
+
+        # Export scan results
+        mkdir -p scan_results/
+        jf docker scan ${{ github.event.inputs.IMAGE_PREFIX }}-${{ github.repository_id }}:${{ github.sha }} --format json > scan_results/results.json
+        jf docker scan ${{ github.event.inputs.IMAGE_PREFIX }}-${{ github.repository_id }}:${{ github.sha }} --format sarif > scan_results/results.sarif
+
+    - name: Upload JFrog XRay Scan artifacts to Pipeline Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: jfrog-xray-scan
+        path: scan_results/
+
+    - name: Push image to JFrog Artifactory Container Registry
+      if: ${{ inputs.FEATURE_JFROG }}
+      id: push-image-jfrog
+      env:
+        IMAGE_REGISTRY: ${{ secrets.ARTIFACTORY_URL }}
+        IMAGE_REPOSITORY: ${{ github.event.inputs.JFROG_IMAGE_REPOSITORY }}
+        IMAGE_NAME: "${{ github.event.inputs.IMAGE_PREFIX }}-${{ github.repository_id }}"
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        # Point image to image registry and push
+        docker tag ${{ github.event.inputs.IMAGE_PREFIX }}-${{ github.repository_id }}:${{ github.sha }} $IMAGE_REGISTRY/$IMAGE_REPOSITORY/$IMAGE_NAME:$IMAGE_TAG
+        docker push $IMAGE_REGISTRY/$IMAGE_REPOSITORY/$IMAGE_NAME:$IMAGE_TAG
+
+    - name: Push image to GitHub Container Registry
+      if: ${{ !inputs.FEATURE_JFROG }}
+      id: push-image-ghcr
+      env:
+        IMAGE_REGISTRY: "ghcr.io"
+        IMAGE_REPOSITORY: ${{ github.actor }}
+        IMAGE_NAME: "${{ github.event.inputs.IMAGE_PREFIX }}-${{ github.repository_id }}"
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        # Lowercase repository
+        export IMAGE_REPOSITORY=${IMAGE_REPOSITORY,,}
+
+        # Point image to image registry and push
+        docker tag ${{ github.event.inputs.IMAGE_PREFIX }}-${{ github.repository_id }}:${{ github.sha }} $IMAGE_REGISTRY/$IMAGE_REPOSITORY/$IMAGE_NAME:$IMAGE_TAG
+        docker push $IMAGE_REGISTRY/$IMAGE_REPOSITORY/$IMAGE_NAME:$IMAGE_TAG
+
+    - name: Pipeline summary
+      run: |
+        echo '### Job Summary' >> $GITHUB_STEP_SUMMARY
+        echo 'Build finished  ' >> $GITHUB_STEP_SUMMARY
+        echo '- XRay Scan (json, sarif) available as an Pipeline Artifact' >> $GITHUB_STEP_SUMMARY
+        echo '- Image Available in JFrog Artifactory or GitHub Packages: *${{ github.event.inputs.IMAGE_PREFIX }}-${{ github.repository_id }}:${{ github.sha }}*' >> $GITHUB_STEP_SUMMARY
+        echo '- Execute Container Image Locally: `docker run -p 8080:8080 ${{ github.event.inputs.IMAGE_PREFIX }}-${{ github.repository_id }}:${{ github.sha }}`' >> $GITHUB_STEP_SUMMARY
+        echo '- Local reproducability can be achieved with: `docker build -t petclinic:test -f Dockerfile_staged`'
