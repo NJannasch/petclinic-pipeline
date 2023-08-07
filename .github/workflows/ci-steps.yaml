@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       JFROG_MVN_REMOTE:
-        description: 'AWS Region of ECR'
+        description: 'MVN Remote Repository'
         required: true
         default: 'mvn-remote'
       JFROG_IMAGE_REPOSITORY:

@@ -3,6 +3,19 @@
 This repository showcases methods to integrate security into CI/CD workflows using GitHub Actions, with a particular emphasis on integrating JFrog's suite of tools.  
 To illustrate, we use the [Spring Pet Clinic application](https://github.com/spring-projects/spring-petclinic). Branch-based logic has been omitted for simplicity.
 
+## Tl;dr Use-Case Results:
+- Basic Example
+  - [Pipeline Run](https://github.com/NJannasch/petclinic-pipeline/actions/runs/5788038984)
+     - [Pipeline Job](https://github.com/NJannasch/petclinic-pipeline/actions/runs/5788038984/job/15686198347)
+  - [Scan Artifacts](https://github.com/NJannasch/petclinic-pipeline/suites/14891076945/artifacts/848302174)
+  - [Container Image Release](https://github.com/NJannasch/petclinic-pipeline/pkgs/container/petclinic-675768085)
+    - ```docker run -p 8080:8080 ghcr.io/njannasch/petclinic-675768085:9633cd17362cda7452e7013725bde9de17b92a24```
+- Advanced Example
+  - [Pipeline Run](https://github.com/NJannasch/petclinic-pipeline/actions/runs/5788053822)
+    - [Pipeline Job](https://github.com/NJannasch/petclinic-pipeline/actions/runs/5788053822/job/15686238311)
+  - [Scan Artifacts](https://github.com/NJannasch/petclinic-pipeline/suites/14891117723/artifacts/848306498)
+
+
 ## Table of Contents
 
 - [Getting Started](#getting-started)
